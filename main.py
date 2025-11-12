@@ -3,25 +3,136 @@ from typing import Optional, List
 import os
 import csv
 import io
+import sqlite3
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
-from sqlmodel import SQLModel, Field, Session, select, create_engine
 
 # ===== DATABASE SETUP =====
 DB_DIR = "/data"
 os.makedirs(DB_DIR, exist_ok=True)
 DB_PATH = os.path.join(DB_DIR, "taskdesk_cloud.db")
 
-# DON'T DELETE EXISTING DATABASE - PRESERVE YOUR DATA!
-DATABASE_URL = f"sqlite:///{DB_PATH}"
+# Simple SQLite connection
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-engine = create_engine(
-    DATABASE_URL,
-    echo=False,
-    connect_args={"check_same_thread": False}
+# Initialize database
+def init_db():
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Create tables
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS staff (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            phone TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS category (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS task (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_name TEXT DEFAULT '',
+            legal_name TEXT DEFAULT '',
+            particular TEXT NOT NULL,
+            alloted_to TEXT NOT NULL,
+            status TEXT DEFAULT 'OPEN',
+            remarks TEXT DEFAULT '',
+            billing_done BOOLEAN DEFAULT FALSE,
+            last_follow_up DATE,
+            deadline DATE,
+            deadline_reason TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Insert default data if empty
+    cursor.execute("SELECT COUNT(*) FROM staff")
+    if cursor.fetchone()[0] == 0:
+        default_staff = ["Anil Mandal", "Rutik B.", "Pooja G.", "Pranita N."]
+        for name in default_staff:
+            cursor.execute("INSERT INTO staff (name) VALUES (?)", (name,))
+    
+    cursor.execute("SELECT COUNT(*) FROM category")
+    if cursor.fetchone()[0] == 0:
+        default_categories = [
+            "Director Change", "Shop Act New", "MSME Update", "IEC Certificate New",
+            "MSME New", "IEC Certificate Update", "Name Run", "Incorporation",
+            "GST Registration", "Company Closure", "DSC Application"
+        ]
+        for category in default_categories:
+            cursor.execute("INSERT INTO category (name) VALUES (?)", (category,))
+    
+    conn.commit()
+    conn.close()
+
+# Initialize database on startup
+init_db()
+
+# ===== FASTAPI APP =====
+app = FastAPI(
+    title="RGA TaskDesk",
+    description="Professional Task Management for RGA",
+    version="2.1"
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ===== API SCHEMAS =====
+class StaffIn(BaseModel):
+    name: str
+    phone: Optional[str] = None
+
+class StaffOut(StaffIn):
+    id: int
+    created_at: datetime
+
+class CategoryIn(BaseModel):
+    name: str
+
+class CategoryOut(CategoryIn):
+    id: int
+    created_at: datetime
+
+class TaskIn(BaseModel):
+    client_name: str = ""
+    legal_name: str = ""
+    particular: str
+    alloted_to: str
+    status: str = "OPEN"
+    remarks: str = ""
+    billing_done: bool = False
+    last_follow_up: Optional[date] = None
+    deadline: Optional[date] = None
+
+class TaskOut(TaskIn):
+    id: int
+    deadline_reason: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+# [REST OF YOUR API CODE WITH SIMPLE SQLITE OPERATIONS...]
+# Your HTML interface remains exactly the same
 
 # ===== DATA MODELS =====
 class Staff(SQLModel, table=True):
