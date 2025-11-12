@@ -4,28 +4,25 @@ import os
 import csv
 import io
 import sqlite3
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
-from pydantic import BaseModel
 
 # ===== DATABASE SETUP =====
 DB_DIR = "/data"
 os.makedirs(DB_DIR, exist_ok=True)
 DB_PATH = os.path.join(DB_DIR, "taskdesk_cloud.db")
 
-# Simple SQLite connection
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-# Initialize database
 def init_db():
     conn = get_db()
     cursor = conn.cursor()
     
-    # Create tables
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS staff (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,7 +58,7 @@ def init_db():
         )
     ''')
     
-    # Insert default data if empty
+    # Default data
     cursor.execute("SELECT COUNT(*) FROM staff")
     if cursor.fetchone()[0] == 0:
         default_staff = ["Anil Mandal", "Rutik B.", "Pooja G.", "Pranita N."]
@@ -81,7 +78,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Initialize database on startup
 init_db()
 
 # ===== FASTAPI APP =====
@@ -98,346 +94,283 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===== API SCHEMAS =====
-class StaffIn(BaseModel):
-    name: str
-    phone: Optional[str] = None
+# ===== API ROUTES =====
+@app.get("/")
+def root():
+    return {"status": "running", "app": "RGA TaskDesk", "version": "2.1"}
 
-class StaffOut(StaffIn):
-    id: int
-    created_at: datetime
+@app.get("/staff")
+def get_staff():
+    conn = get_db()
+    staff = conn.execute("SELECT * FROM staff ORDER BY name").fetchall()
+    conn.close()
+    return [dict(row) for row in staff]
 
-class CategoryIn(BaseModel):
-    name: str
-
-class CategoryOut(CategoryIn):
-    id: int
-    created_at: datetime
-
-class TaskIn(BaseModel):
-    client_name: str = ""
-    legal_name: str = ""
-    particular: str
-    alloted_to: str
-    status: str = "OPEN"
-    remarks: str = ""
-    billing_done: bool = False
-    last_follow_up: Optional[date] = None
-    deadline: Optional[date] = None
-
-class TaskOut(TaskIn):
-    id: int
-    deadline_reason: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
-
-# [REST OF YOUR API CODE WITH SIMPLE SQLITE OPERATIONS...]
-# Your HTML interface remains exactly the same
-
-# ===== DATA MODELS =====
-class Staff(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    name: str
-    phone: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-class Category(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    name: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-class Task(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    client_name: str = ""
-    legal_name: str = ""
-    particular: str
-    alloted_to: str
-    status: str = "OPEN"
-    remarks: str = ""
-    billing_done: bool = False
-    last_follow_up: Optional[date] = None
-    deadline: Optional[date] = None
-    deadline_reason: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
-
-# ===== FASTAPI APP =====
-app = FastAPI(
-    title="RGA TaskDesk",
-    description="Professional Task Management for RGA",
-    version="2.1"
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ===== DEFAULT DATA =====
-DEFAULT_STAFF = ["Anil Mandal", "Rutik B.", "Pooja G.", "Pranita N."]
-DEFAULT_CATEGORIES = [
-    "Director Change", "Shop Act New", "MSME Update", "IEC Certificate New",
-    "MSME New", "IEC Certificate Update", "Name Run", "Incorporation",
-    "GST Registration", "Company Closure", "DSC Application"
-]
-
-# Create tables only if they don't exist - PRESERVE DATA
-SQLModel.metadata.create_all(engine)
-
-# Only add default data if tables are empty
-with Session(engine) as session:
-    if not session.exec(select(Staff)).first():
-        for name in DEFAULT_STAFF:
-            session.add(Staff(name=name))
-        session.commit()
+@app.post("/staff")
+def create_staff(data: dict):
+    name = data.get('name')
+    phone = data.get('phone')
     
-    if not session.exec(select(Category)).first():
-        for category_name in DEFAULT_CATEGORIES:
-            session.add(Category(name=category_name))
-        session.commit()
+    if not name:
+        raise HTTPException(400, "Name is required")
+    
+    conn = get_db()
+    existing = conn.execute("SELECT id FROM staff WHERE name = ?", (name,)).fetchone()
+    if existing:
+        conn.close()
+        raise HTTPException(400, "Staff member already exists")
+    
+    cursor = conn.execute(
+        "INSERT INTO staff (name, phone) VALUES (?, ?)", 
+        (name, phone)
+    )
+    new_id = cursor.lastrowid
+    conn.commit()
+    
+    new_staff = conn.execute("SELECT * FROM staff WHERE id = ?", (new_id,)).fetchone()
+    conn.close()
+    return dict(new_staff)
 
-# ===== API SCHEMAS =====
-class StaffIn(BaseModel):
-    name: str
-    phone: Optional[str] = None
+@app.delete("/staff/{staff_id}")
+def delete_staff(staff_id: int):
+    conn = get_db()
+    staff = conn.execute("SELECT * FROM staff WHERE id = ?", (staff_id,)).fetchone()
+    if not staff:
+        conn.close()
+        raise HTTPException(404, "Staff not found")
+    
+    conn.execute("DELETE FROM staff WHERE id = ?", (staff_id,))
+    conn.commit()
+    conn.close()
+    return {"message": "Staff deleted successfully"}
 
-class StaffOut(StaffIn):
-    id: int
-    created_at: datetime
+@app.get("/categories")
+def get_categories():
+    conn = get_db()
+    categories = conn.execute("SELECT * FROM category ORDER BY name").fetchall()
+    conn.close()
+    return [dict(row) for row in categories]
 
-class CategoryIn(BaseModel):
-    name: str
+@app.post("/categories")
+def create_category(data: dict):
+    name = data.get('name')
+    
+    if not name:
+        raise HTTPException(400, "Name is required")
+    
+    conn = get_db()
+    existing = conn.execute("SELECT id FROM category WHERE name = ?", (name,)).fetchone()
+    if existing:
+        conn.close()
+        raise HTTPException(400, "Category already exists")
+    
+    cursor = conn.execute("INSERT INTO category (name) VALUES (?)", (name,))
+    new_id = cursor.lastrowid
+    conn.commit()
+    
+    new_category = conn.execute("SELECT * FROM category WHERE id = ?", (new_id,)).fetchone()
+    conn.close()
+    return dict(new_category)
 
-class CategoryOut(CategoryIn):
-    id: int
-    created_at: datetime
+@app.delete("/categories/{category_id}")
+def delete_category(category_id: int):
+    conn = get_db()
+    category = conn.execute("SELECT * FROM category WHERE id = ?", (category_id,)).fetchone()
+    if not category:
+        conn.close()
+        raise HTTPException(404, "Category not found")
+    
+    conn.execute("DELETE FROM category WHERE id = ?", (category_id,))
+    conn.commit()
+    conn.close()
+    return {"message": "Category deleted successfully"}
 
-class TaskIn(BaseModel):
-    client_name: str = ""
-    legal_name: str = ""
-    particular: str
-    alloted_to: str
-    status: str = "OPEN"
-    remarks: str = ""
-    billing_done: bool = False
-    last_follow_up: Optional[date] = None
-    deadline: Optional[date] = None
+@app.get("/tasks")
+def get_tasks(status: str = None, staff: str = None, search: str = None):
+    conn = get_db()
+    query = "SELECT * FROM task"
+    params = []
+    
+    if status and status != "ALL":
+        query += " WHERE status = ?"
+        params.append(status)
+    
+    if staff and staff != "ALL":
+        if "WHERE" in query:
+            query += " AND alloted_to = ?"
+        else:
+            query += " WHERE alloted_to = ?"
+        params.append(staff)
+    
+    if search:
+        search_term = f"%{search}%"
+        if "WHERE" in query:
+            query += " AND (client_name LIKE ? OR legal_name LIKE ? OR particular LIKE ? OR remarks LIKE ?)"
+        else:
+            query += " WHERE (client_name LIKE ? OR legal_name LIKE ? OR particular LIKE ? OR remarks LIKE ?)"
+        params.extend([search_term, search_term, search_term, search_term])
+    
+    query += " ORDER BY updated_at DESC"
+    tasks = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(row) for row in tasks]
 
-class TaskOut(TaskIn):
-    id: int
-    deadline_reason: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
+@app.post("/tasks")
+def create_task(data: dict):
+    required_fields = ['particular', 'alloted_to']
+    for field in required_fields:
+        if not data.get(field):
+            raise HTTPException(400, f"{field} is required")
+    
+    conn = get_db()
+    cursor = conn.execute('''
+        INSERT INTO task (
+            client_name, legal_name, particular, alloted_to, status, remarks,
+            billing_done, last_follow_up, deadline
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        data.get('client_name', ''),
+        data.get('legal_name', ''),
+        data.get('particular'),
+        data.get('alloted_to'),
+        data.get('status', 'OPEN'),
+        data.get('remarks', ''),
+        data.get('billing_done', False),
+        data.get('last_follow_up'),
+        data.get('deadline')
+    ))
+    new_id = cursor.lastrowid
+    conn.commit()
+    
+    new_task = conn.execute("SELECT * FROM task WHERE id = ?", (new_id,)).fetchone()
+    conn.close()
+    return dict(new_task)
 
-def tasks_to_csv(tasks):
-    """Convert tasks to CSV using built-in csv module (NO PANDAS)"""
+@app.put("/tasks/{task_id}")
+def update_task(task_id: int, data: dict):
+    conn = get_db()
+    task = conn.execute("SELECT * FROM task WHERE id = ?", (task_id,)).fetchone()
+    if not task:
+        conn.close()
+        raise HTTPException(404, "Task not found")
+    
+    conn.execute('''
+        UPDATE task SET
+            client_name = ?, legal_name = ?, particular = ?, alloted_to = ?,
+            status = ?, remarks = ?, billing_done = ?, last_follow_up = ?,
+            deadline = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    ''', (
+        data.get('client_name', ''),
+        data.get('legal_name', ''),
+        data.get('particular'),
+        data.get('alloted_to'),
+        data.get('status', 'OPEN'),
+        data.get('remarks', ''),
+        data.get('billing_done', False),
+        data.get('last_follow_up'),
+        data.get('deadline'),
+        task_id
+    ))
+    conn.commit()
+    
+    updated_task = conn.execute("SELECT * FROM task WHERE id = ?", (task_id,)).fetchone()
+    conn.close()
+    return dict(updated_task)
+
+@app.delete("/tasks/{task_id}")
+def delete_task(task_id: int):
+    conn = get_db()
+    task = conn.execute("SELECT * FROM task WHERE id = ?", (task_id,)).fetchone()
+    if not task:
+        conn.close()
+        raise HTTPException(404, "Task not found")
+    
+    conn.execute("DELETE FROM task WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+    return {"message": "Task deleted successfully"}
+
+@app.put("/tasks/{task_id}/deadline")
+def update_task_deadline(task_id: int, deadline: date, reason: str = None):
+    conn = get_db()
+    task = conn.execute("SELECT * FROM task WHERE id = ?", (task_id,)).fetchone()
+    if not task:
+        conn.close()
+        raise HTTPException(404, "Task not found")
+    
+    # Check if extending missed deadline
+    if task['deadline'] and task['deadline'] < date.today() and deadline > task['deadline']:
+        if not reason:
+            conn.close()
+            raise HTTPException(400, "Reason required for extending missed deadline")
+        deadline_reason = reason
+    else:
+        deadline_reason = task['deadline_reason']
+    
+    conn.execute('''
+        UPDATE task SET deadline = ?, deadline_reason = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    ''', (deadline, deadline_reason, task_id))
+    conn.commit()
+    conn.close()
+    
+    return {"message": "Deadline updated successfully"}
+
+@app.get("/export/tasks")
+def export_tasks_to_csv():
+    conn = get_db()
+    tasks = conn.execute("SELECT * FROM task").fetchall()
+    conn.close()
+    
     output = io.StringIO()
     writer = csv.writer(output)
     
-    # Write header
     writer.writerow([
         'ID', 'Client Name', 'Legal Name', 'Particular', 'Assigned To',
         'Status', 'Remarks', 'Billing Done', 'Last Follow Up', 'Deadline',
         'Deadline Reason', 'Created At', 'Updated At'
     ])
     
-    # Write data
     for task in tasks:
         writer.writerow([
-            task.id,
-            task.client_name,
-            task.legal_name,
-            task.particular,
-            task.alloted_to,
-            task.status,
-            task.remarks,
-            'Yes' if task.billing_done else 'No',
-            task.last_follow_up,
-            task.deadline,
-            task.deadline_reason,
-            task.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-            task.updated_at.strftime('%Y-%m-%d %H:%M:%S')
+            task['id'],
+            task['client_name'],
+            task['legal_name'],
+            task['particular'],
+            task['alloted_to'],
+            task['status'],
+            task['remarks'],
+            'Yes' if task['billing_done'] else 'No',
+            task['last_follow_up'],
+            task['deadline'],
+            task['deadline_reason'],
+            task['created_at'],
+            task['updated_at']
         ])
     
-    return output.getvalue()
-
-# ===== API ROUTES =====
-@app.get("/")
-def root():
-    return {"status": "running", "app": "RGA TaskDesk", "version": "2.1"}
-
-@app.get("/staff", response_model=List[StaffOut])
-def get_staff():
-    with Session(engine) as session:
-        return session.exec(select(Staff).order_by(Staff.name)).all()
-
-@app.post("/staff", response_model=StaffOut)
-def create_staff(staff: StaffIn):
-    with Session(engine) as session:
-        existing = session.exec(select(Staff).where(Staff.name == staff.name)).first()
-        if existing:
-            raise HTTPException(400, "Staff member already exists")
-        
-        new_staff = Staff(**staff.dict())
-        session.add(new_staff)
-        session.commit()
-        session.refresh(new_staff)
-        return new_staff
-
-@app.delete("/staff/{staff_id}")
-def delete_staff(staff_id: int):
-    with Session(engine) as session:
-        staff = session.get(Staff, staff_id)
-        if not staff:
-            raise HTTPException(404, "Staff not found")
-        
-        session.delete(staff)
-        session.commit()
-        return {"message": "Staff deleted successfully"}
-
-@app.get("/categories", response_model=List[CategoryOut])
-def get_categories():
-    with Session(engine) as session:
-        return session.exec(select(Category).order_by(Category.name)).all()
-
-@app.post("/categories", response_model=CategoryOut)
-def create_category(category: CategoryIn):
-    with Session(engine) as session:
-        existing = session.exec(select(Category).where(Category.name == category.name)).first()
-        if existing:
-            raise HTTPException(400, "Category already exists")
-        
-        new_category = Category(**category.dict())
-        session.add(new_category)
-        session.commit()
-        session.refresh(new_category)
-        return new_category
-
-@app.delete("/categories/{category_id}")
-def delete_category(category_id: int):
-    with Session(engine) as session:
-        category = session.get(Category, category_id)
-        if not category:
-            raise HTTPException(404, "Category not found")
-        
-        session.delete(category)
-        session.commit()
-        return {"message": "Category deleted successfully"}
-
-@app.get("/tasks", response_model=List[TaskOut])
-def get_tasks(status: Optional[str] = None, staff: Optional[str] = None, search: Optional[str] = None):
-    with Session(engine) as session:
-        query = select(Task)
-        
-        if status and status != "ALL":
-            query = query.where(Task.status == status)
-        
-        if staff and staff != "ALL":
-            query = query.where(Task.alloted_to == staff)
-        
-        if search:
-            search_term = f"%{search}%"
-            query = query.where(
-                (Task.client_name.ilike(search_term)) |
-                (Task.legal_name.ilike(search_term)) |
-                (Task.particular.ilike(search_term)) |
-                (Task.remarks.ilike(search_term))
-            )
-        
-        tasks = session.exec(query.order_by(Task.updated_at.desc())).all()
-        return tasks
-
-@app.post("/tasks", response_model=TaskOut)
-def create_task(task: TaskIn):
-    with Session(engine) as session:
-        new_task = Task(**task.dict())
-        session.add(new_task)
-        session.commit()
-        session.refresh(new_task)
-        return new_task
-
-@app.put("/tasks/{task_id}", response_model=TaskOut)
-def update_task(task_id: int, task: TaskIn):
-    with Session(engine) as session:
-        existing_task = session.get(Task, task_id)
-        if not existing_task:
-            raise HTTPException(404, "Task not found")
-        
-        if (existing_task.deadline and task.deadline and 
-            existing_task.deadline != task.deadline and 
-            existing_task.deadline < date.today()):
-            raise HTTPException(400, "Please provide reason for missed deadline before setting new deadline")
-        
-        for field, value in task.dict().items():
-            setattr(existing_task, field, value)
-        
-        existing_task.updated_at = datetime.utcnow()
-        session.add(existing_task)
-        session.commit()
-        session.refresh(existing_task)
-        return existing_task
-
-@app.put("/tasks/{task_id}/deadline")
-def update_task_deadline(task_id: int, deadline: date, reason: Optional[str] = None):
-    with Session(engine) as session:
-        task = session.get(Task, task_id)
-        if not task:
-            raise HTTPException(404, "Task not found")
-        
-        if task.deadline and task.deadline < date.today() and deadline > task.deadline:
-            if not reason:
-                raise HTTPException(400, "Reason required for extending missed deadline")
-            task.deadline_reason = reason
-        
-        task.deadline = deadline
-        task.updated_at = datetime.utcnow()
-        session.add(task)
-        session.commit()
-        
-        return {"message": "Deadline updated successfully"}
-
-@app.delete("/tasks/{task_id}")
-def delete_task(task_id: int):
-    with Session(engine) as session:
-        task = session.get(Task, task_id)
-        if not task:
-            raise HTTPException(404, "Task not found")
-        
-        session.delete(task)
-        session.commit()
-        return {"message": "Task deleted successfully"}
-
-@app.get("/export/tasks")
-def export_tasks_to_csv():
-    with Session(engine) as session:
-        tasks = session.exec(select(Task)).all()
-        
-        csv_content = tasks_to_csv(tasks)
-        
-        filename = f"RGA_Tasks_Export_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
-        
-        return Response(
-            content=csv_content,
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
+    csv_content = output.getvalue()
+    filename = f"RGA_Tasks_Export_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+    
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 # ===== WEB INTERFACE =====
 @app.get("/app")
 def web_interface():
-    # [KEEP YOUR EXISTING HTML CODE EXACTLY AS IS - NO CHANGES NEEDED]
-    # Your complete HTML interface code goes here (unchanged)
+    # [PASTE YOUR ENTIRE EXISTING HTML CODE HERE]
+    # Your complete HTML interface with all CSS and JavaScript
     html_content = """
     <!DOCTYPE html>
     <html>
-    <!-- YOUR EXACT EXISTING HTML CODE -->
+    <!-- YOUR COMPLETE HTML CODE GOES HERE -->
     </html>
     """
     return HTMLResponse(content=html_content)
 
-# For Render deployment
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 10000))
