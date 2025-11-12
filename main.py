@@ -375,26 +375,13 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-# ADD THIS TO THE END OF YOUR main.py FILE
 
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 
-# Basic health check route
+# Basic test route
 @app.get("/")
-async def root():
-    return {"message": "RGA TaskDesk is running!", "status": "active", "version": "2.1"}
+def read_root():
+    return {"Hello": "RGA TaskDesk is working!"}
 
-# Health check endpoint
-@app.get("/health")
-async def health_check():
-    return JSONResponse(content={"status": "healthy", "service": "RGA TaskDesk"})
-
-# Test the /app route specifically
 @app.get("/app")
-async def app_route():
-    return {
-        "message": "RGA TaskDesk Application", 
-        "status": "running",
-        "available_routes": ["/", "/health", "/app", "/docs"]
-    }
+def read_app():
+    return {"message": "App route is working!"}
